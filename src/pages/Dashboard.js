@@ -1,0 +1,755 @@
+/*global chrome */
+
+import React, { useEffect, useState, useRef, useCallback } from 'react';
+import { Bar, Pie } from 'react-chartjs-2';
+import { Chart as ChartJS, ArcElement, Tooltip, Legend, BarElement, CategoryScale, LinearScale } from 'chart.js';
+import * as faceapi from 'face-api.js';
+import {
+  getScreenTime,
+  saveMood,
+  getRecommendations,
+  updateRecommendation,
+  initiateSpotifyLogin,
+  getUser,
+  savePlaylist,
+  fetchNewPlaylist,
+  getLatestMood,
+  getLeaderboard,
+  getChallenges,
+  startPlayback,
+} from '../utils/api';
+import SpotifyPlayer from 'react-spotify-web-playback';
+import { ToastContainer, toast } from 'react-toastify';
+import 'react-toastify/dist/ReactToastify.css';
+
+ChartJS.register(ArcElement, Tooltip, Legend, BarElement, CategoryScale, LinearScale);
+
+const MODEL_URL = '/models';
+const CDN_MODEL_URL = 'https://cdn.jsdelivr.net/gh/justadudewhohacks/face-api.js/weights/';
+
+const Dashboard = () => {
+  const [screenTimeData, setScreenTimeData] = useState([]);
+  const [recommendations, setRecommendations] = useState([]);
+  const [leaderboard, setLeaderboard] = useState([]);
+  const [error, setError] = useState('');
+  const [extensionInstalled, setExtensionInstalled] = useState(true);
+  const [webcamEnabled, setWebcamEnabled] = useState(false);
+  const [detectedMood, setDetectedMood] = useState('Detecting mood...');
+  const [lastSavedMood, setLastSavedMood] = useState(null);
+  const [correctedMood, setCorrectedMood] = useState('');
+  const [timer, setTimer] = useState(null);
+  const [timerRunning, setTimerRunning] = useState(false);
+  const [actionStatus, setActionStatus] = useState(null);
+  const [spotifyToken, setSpotifyToken] = useState('');
+  const [currentPlaylist, setCurrentPlaylist] = useState({ id: '', name: '', offset: 0 });
+  const [modelsLoaded, setModelsLoaded] = useState(false);
+  const [detectionAttempts, setDetectionAttempts] = useState(0);
+  const [leaderboardLoading, setLeaderboardLoading] = useState(false);
+  const [isPlaying, setIsPlaying] = useState(false);
+  const [deviceId, setDeviceId] = useState('');
+  const videoRef = useRef(null);
+  const streamRef = useRef(null);
+  const lastSentRef = useRef({ timestamp: 0, mood: null, confidence: 0 });
+  const timerRef = useRef(null);
+  const updateIntervalRef = useRef(null);
+
+  // Helper function to show toast notifications
+  const showToast = (message, type = 'success') => {
+    const options = {
+      position: 'top-right',
+      autoClose: 3000,
+      hideProgressBar: false,
+      closeOnClick: true,
+      pauseOnHover: true,
+      draggable: true,
+    };
+    if (type === 'success') toast.success(message, options);
+    else if (type === 'error') toast.error(message, options);
+    else toast.info(message, options);
+  };
+
+  // Debounced fetch recommendations
+  const fetchRecommendationsAutomatically = useCallback(async () => {
+    if (!localStorage.getItem('userId')) return;
+
+    try {
+      const latestScreenTime = screenTimeData.length > 0 ? screenTimeData[0] : null;
+      let latestMood = lastSavedMood?.mood?.toLowerCase() || (detectedMood && detectedMood.split(' ')[2]?.toLowerCase()) || null;
+
+      if (!latestMood) {
+        const moodData = await getLatestMood();
+        latestMood = moodData?.mood?.toLowerCase() || null;
+        setLastSavedMood(moodData);
+      }
+
+      if (latestScreenTime && latestMood) {
+        const updatedRecommendations = await getRecommendations();
+        setRecommendations(updatedRecommendations);
+        const latestRec = updatedRecommendations[0];
+        if (latestRec?.type === 'music') {
+          const details = JSON.parse(latestRec.details);
+          setCurrentPlaylist({ id: details.playlistId, name: details.name, offset: 0 });
+        } else {
+          setCurrentPlaylist({ id: '', name: '', offset: 0 });
+        }
+      }
+    } catch (err) {
+      setError('Failed to fetch recommendations');
+      showToast('Failed to fetch recommendations', 'error');
+      console.error('Recommendation fetch error:', err);
+      if (err.message.includes('token')) {
+        await handleSpotifyConnect();
+      }
+    }
+  }, [screenTimeData, lastSavedMood, detectedMood]);
+
+  // Consolidated data polling
+  useEffect(() => {
+    const pollData = async () => {
+      try {
+        const [screenTimeData, moodData, recData, userData] = await Promise.all([
+          getScreenTime(),
+          getLatestMood(),
+          getRecommendations(),
+          getUser(),
+        ]);
+        setScreenTimeData(screenTimeData.sort((a, b) => new Date(b.date) - new Date(a.date)));
+        setLastSavedMood(moodData);
+        setRecommendations(recData);
+        setSpotifyToken(userData.spotifyToken?.accessToken || '');
+        setDeviceId(userData.deviceId || '');
+        await fetchLeaderboard();
+      } catch (err) {
+        setError(err.message || 'Failed to fetch data');
+        showToast(err.message || 'Failed to fetch data', 'error');
+        if (err.message.includes('token')) {
+          await handleSpotifyConnect();
+        }
+      }
+    };
+
+    const initialize = async () => {
+      await pollData();
+      updateIntervalRef.current = setInterval(pollData, 300000); // 5 minutes
+    };
+
+    initialize();
+
+    if (window.chrome && chrome.runtime) {
+      chrome.runtime.sendMessage('cohlihkpndpeoklcbgcgaobmoojpdhpg', { message: 'ping' }, (response) => {
+        if (chrome.runtime.lastError || !response) setExtensionInstalled(false);
+      });
+    } else {
+      setExtensionInstalled(false);
+    }
+
+    const loadModels = async () => {
+      try {
+        await faceapi.nets.tinyFaceDetector.loadFromUri(MODEL_URL);
+        await faceapi.nets.faceLandmark68Net.loadFromUri(MODEL_URL);
+        await faceapi.nets.faceExpressionNet.loadFromUri(MODEL_URL);
+        setModelsLoaded(true);
+        showToast('Emotion detection models loaded successfully!');
+      } catch (err) {
+        console.warn('Failed to load local models:', err);
+        try {
+          await faceapi.nets.tinyFaceDetector.loadFromUri(CDN_MODEL_URL);
+          await faceapi.nets.faceLandmark68Net.loadFromUri(CDN_MODEL_URL);
+          await faceapi.nets.faceExpressionNet.loadFromUri(CDN_MODEL_URL);
+          setModelsLoaded(true);
+          showToast('Emotion detection models loaded from CDN!');
+        } catch (cdnErr) {
+          console.error('Error loading models from CDN:', cdnErr);
+          setError('Failed to load emotion detection models.');
+          showToast('Failed to load emotion detection models', 'error');
+        }
+      }
+    };
+    loadModels();
+
+    return () => {
+      stopWebcam();
+      if (timerRef.current) clearInterval(timerRef.current);
+      if (updateIntervalRef.current) clearInterval(updateIntervalRef.current);
+    };
+  }, []);
+
+  useEffect(() => {
+    if (webcamEnabled && modelsLoaded && videoRef.current) {
+      startWebcam();
+      showToast('Webcam enabled for mood detection!');
+    }
+    return () => {
+      if (webcamEnabled) stopWebcam();
+    };
+  }, [webcamEnabled, modelsLoaded]);
+
+  useEffect(() => {
+    if (webcamEnabled && modelsLoaded && videoRef.current) {
+      updateIntervalRef.current = setInterval(detectEmotions, 10000);
+      return () => {
+        if (updateIntervalRef.current) {
+          clearInterval(updateIntervalRef.current);
+          updateIntervalRef.current = null;
+        }
+      };
+    }
+  }, [webcamEnabled, modelsLoaded, correctedMood]);
+
+  const detectEmotions = async () => {
+    if (!videoRef.current || !webcamEnabled || !modelsLoaded) {
+      console.warn('Emotion detection aborted:', { videoReady: !!videoRef.current, webcamEnabled, modelsLoaded });
+      setDetectedMood('Emotion detection not ready. Check webcam and model loading.');
+      showToast('Emotion detection not ready', 'error');
+      return;
+    }
+
+    try {
+      const detection = await faceapi
+        .detectSingleFace(videoRef.current, new faceapi.TinyFaceDetectorOptions({ inputSize: 224, scoreThreshold: 0.5 }))
+        .withFaceLandmarks()
+        .withFaceExpressions();
+
+      setDetectionAttempts(prev => prev + 1);
+
+      if (detection && detection.expressions) {
+        const expressions = detection.expressions;
+        const moodMap = {
+          happy: expressions.happy || 0,
+          sad: expressions.sad || 0,
+          angry: expressions.angry || 0,
+          stressed: expressions.fearful || 0,
+          calm: expressions.neutral || 0,
+          neutral: expressions.neutral || 0,
+          surprised: expressions.surprised || 0,
+          disgusted: expressions.disgusted || 0,
+        };
+        const emotions = Object.keys(moodMap).map(key => ({
+          mood: key === 'surprised' ? 'happy' : key === 'disgusted' ? 'angry' : key,
+          confidence: moodMap[key],
+        }));
+        const dominantEmotion = emotions.reduce((prev, current) =>
+          prev.confidence > current.confidence ? prev : current,
+          { mood: 'unknown', confidence: 0 }
+        );
+
+        const moodText = correctedMood || dominantEmotion.mood;
+        const confidence = dominantEmotion.confidence;
+        const now = Date.now();
+        const timeSinceLast = (now - lastSentRef.current.timestamp) / 1000;
+        const confidenceDrop = lastSentRef.current.confidence ? Math.abs(confidence - lastSentRef.current.confidence) : 0;
+
+        if (confidence > 0.2) {
+          setDetectedMood(`You seem ${moodText} (Confidence: ${(confidence * 100).toFixed(2)}%)`);
+        } else {
+          setDetectedMood('Low confidence in emotion detection');
+          showToast('Low confidence in emotion detection', 'error');
+        }
+
+        if ((confidenceDrop > 0.2 || (timeSinceLast >= 30 && moodText !== lastSentRef.current.mood)) && now - lastSentRef.current.timestamp >= 10000) {
+          const moodToSend = { mood: moodText, confidence };
+          try {
+            await saveMood(moodToSend);
+            setLastSavedMood(moodToSend);
+            lastSentRef.current = { timestamp: now, mood: moodText, confidence };
+            showToast(`Mood ${moodText} saved successfully!`);
+            await fetchRecommendationsAutomatically();
+          } catch (err) {
+            console.error('Error sending mood to backend:', err);
+            setError('Failed to send mood data to backend.');
+            showToast('Failed to send mood data', 'error');
+          }
+        }
+
+        setDetectionAttempts(0);
+      } else if (detectionAttempts >= 10) {
+        setDetectedMood('Still no face detected. Ensure good lighting and face the camera directly.');
+        showToast('Still no face detected', 'error');
+      } else {
+        setDetectedMood('No face detected. Please center your face in the frame.');
+        showToast('No face detected', 'error');
+      }
+    } catch (err) {
+      console.error('Error during emotion detection:', err);
+      setDetectedMood('Error detecting emotions');
+      showToast('Error detecting emotions', 'error');
+    }
+  };
+
+  const fetchLeaderboard = async () => {
+    setLeaderboardLoading(true);
+    try {
+      const challenges = await getChallenges();
+      const joined = challenges.find(challenge =>
+        challenge.participants.some(p => p.userId === localStorage.getItem('userId'))
+      );
+      if (joined) {
+        const data = await getLeaderboard(joined.challengeId);
+        setLeaderboard(data.slice(0, 3));
+        showToast('Leaderboard fetched successfully!');
+      } else {
+        setLeaderboard([]);
+        showToast('No leaderboard data available', 'info');
+      }
+    } catch (err) {
+      setError(err.message || 'Failed to fetch leaderboard');
+      showToast(err.message || 'Failed to fetch leaderboard', 'error');
+      setLeaderboard([]);
+    } finally {
+      setLeaderboardLoading(false);
+    }
+  };
+
+  const startWebcam = async () => {
+    if (!modelsLoaded) {
+      setError('Models are still loading, please wait...');
+      showToast('Models are still loading', 'error');
+      return;
+    }
+
+    try {
+      const stream = await navigator.mediaDevices.getUserMedia({ video: { facingMode: 'user', width: 640, height: 480 } });
+      streamRef.current = stream;
+      videoRef.current.srcObject = stream;
+      videoRef.current.onloadedmetadata = () => videoRef.current.play().catch(err => {
+        console.error('Error playing video:', err);
+        setError('Failed to play webcam video.');
+        showToast('Failed to play webcam video', 'error');
+        stopWebcam();
+      });
+    } catch (err) {
+      const errorMsg = err.name === 'NotAllowedError'
+        ? 'Webcam access denied. Please grant camera permission.'
+        : err.name === 'NotFoundError'
+        ? 'No webcam found. Please connect a webcam.'
+        : `Failed to access webcam: ${err.message}`;
+      setError(errorMsg);
+      showToast(errorMsg, 'error');
+      setWebcamEnabled(false);
+    }
+  };
+
+  const stopWebcam = () => {
+    if (streamRef.current) {
+      streamRef.current.getTracks().forEach(track => track.stop());
+      streamRef.current = null;
+    }
+    if (updateIntervalRef.current) {
+      clearInterval(updateIntervalRef.current);
+      updateIntervalRef.current = null;
+    }
+    if (videoRef.current) videoRef.current.srcObject = null;
+    setWebcamEnabled(false);
+    setDetectedMood('Detecting mood...');
+    setDetectionAttempts(0);
+    setCorrectedMood('');
+    setLastSavedMood(null);
+    showToast('Webcam disabled');
+  };
+
+  const handleMoodCorrection = async (e) => {
+    const newMood = e.target.value;
+    setCorrectedMood(newMood);
+
+    if (!newMood) return;
+
+    try {
+      await saveMood({ mood: newMood, confidence: 1.0 });
+      setLastSavedMood({ mood: newMood, confidence: 1.0 });
+      lastSentRef.current = { timestamp: Date.now(), mood: newMood, confidence: 1.0 };
+      setDetectedMood(`You seem ${newMood} (Confidence: 100%)`);
+      showToast(`Corrected mood ${newMood} saved successfully!`);
+      await fetchRecommendationsAutomatically();
+    } catch (err) {
+      console.error('Error saving corrected mood:', err);
+      setError('Failed to save corrected mood');
+      showToast('Failed to save corrected mood', 'error');
+    }
+  };
+
+  const startTimer = (duration) => {
+    const seconds = parseInt(duration) * 60; // Convert minutes to seconds
+    setTimer(seconds);
+    setTimerRunning(true);
+    timerRef.current = setInterval(() => setTimer(prev => prev <= 0 ? (clearInterval(timerRef.current), setTimerRunning(false), 0) : prev - 1), 1000);
+  };
+
+  const resetTimer = () => {
+    if (timerRef.current) clearInterval(timerRef.current);
+    setTimer(null);
+    setTimerRunning(false);
+  };
+
+  const formatTime = (seconds) => {
+    const mins = Math.floor(seconds / 60);
+    const secs = seconds % 60;
+    return `${mins}:${secs < 10 ? '0' : ''}${secs}`;
+  };
+
+  const handleRecommendationAction = async (recommendationId, accepted) => {
+    try {
+      await updateRecommendation(recommendationId, accepted);
+      setActionStatus(accepted ? 'accepted' : 'declined');
+      const updatedRecommendations = await getRecommendations();
+      setRecommendations(updatedRecommendations);
+      showToast(`Recommendation ${accepted ? 'accepted' : 'declined'} successfully!`);
+
+      // Start timer based on accepted recommendation type
+      const latestRec = updatedRecommendations.find(rec => rec.recommendationId === recommendationId);
+      if (accepted && latestRec) {
+        const details = JSON.parse(latestRec.details || '{}');
+        switch (latestRec.type) {
+          case 'break':
+            startTimer(parseInt(details.match(/\d+/)[0]) || 5); // Default to 5 minutes if not parsed
+            break;
+          case 'activity':
+            if (details.message.includes('body stretch')) startTimer(2); // 2-minute body stretch
+            else if (details.message.includes('walk')) startTimer(10); // 10-minute walk
+            else if (details.message.includes('eye exercises')) startTimer(2); // 2-minute eye exercises
+            else if (details.message.includes('meditation')) startTimer(5); // 5-minute meditation
+            break;
+          default:
+            break;
+        }
+      }
+    } catch (err) {
+      setError('Failed to update recommendation');
+      showToast('Failed to update recommendation', 'error');
+    }
+  };
+
+  const handleSpotifyConnect = async () => {
+    try {
+      const authorizeURL = await initiateSpotifyLogin();
+      window.location.href = authorizeURL;
+      showToast('Spotify connection initiated!');
+    } catch (err) {
+      setError('Failed to initiate Spotify login');
+      showToast('Failed to initiate Spotify login', 'error');
+    }
+  };
+
+  const handleSavePlaylist = async () => {
+    if (!currentPlaylist.id) return;
+    try {
+      await savePlaylist(currentPlaylist.id, { saved: true });
+      showToast('Playlist saved successfully!');
+    } catch (err) {
+      setError('Failed to save playlist');
+      showToast('Failed to save playlist', 'error');
+    }
+  };
+
+  const handlePlay = async () => {
+    if (!deviceId) {
+      setError('No device ID available. Please ensure Spotify is active.');
+      showToast('No device ID available', 'error');
+      return;
+    }
+    setIsPlaying(true);
+    try {
+      await startPlayback(deviceId, currentPlaylist.id, currentPlaylist.offset);
+      const playbackState = localStorage.getItem('chillboardPlaybackState');
+      const offset = playbackState ? JSON.parse(playbackState).offset || 0 : 0;
+      setCurrentPlaylist(prev => ({ ...prev, offset }));
+      showToast('Playback started!');
+    } catch (err) {
+      console.error('Playback error:', err);
+      setError(`Playback failed: ${err.message}`);
+      showToast(`Playback failed: ${err.message}`, 'error');
+      if (err.response?.status === 403) {
+        showToast('Playback restricted. Please ensure you have a Spotify Premium account.', 'error');
+      } else if (err.message.includes('token')) {
+        await handleSpotifyConnect();
+        const userData = await getUser();
+        setSpotifyToken(userData.spotifyToken?.accessToken || '');
+        setDeviceId(userData.deviceId || '');
+      }
+    }
+  };
+
+  const handleSkipPlaylist = async () => {
+    let mood = correctedMood || (lastSavedMood?.mood?.toLowerCase() || (detectedMood && detectedMood.split(' ')[2]?.toLowerCase()));
+    if (!mood) {
+      const moodData = await getLatestMood();
+      mood = moodData?.mood?.toLowerCase() || null;
+    }
+    if (!mood) {
+      setError('No mood detected or available. Enable mood detection or correct the mood.');
+      showToast('No mood detected for new playlist', 'error');
+      return;
+    }
+    try {
+      const newPlaylist = await fetchNewPlaylist(mood, true);
+      setCurrentPlaylist({ id: newPlaylist.spotifyPlaylistId, name: newPlaylist.name, offset: 0 });
+      setError('New playlist loaded!');
+      showToast('New playlist loaded!');
+      setIsPlaying(false);
+      localStorage.removeItem('chillboardPlaybackState');
+      await fetchRecommendationsAutomatically();
+    } catch (err) {
+      setError(`Failed to fetch new playlist: ${err.message}`);
+      showToast(`Failed to fetch new playlist: ${err.message}`, 'error');
+      await handleSpotifyConnect();
+    }
+  };
+
+  const today = new Date().toISOString().split('T')[0];
+
+  const barChartData = {
+    labels: screenTimeData.map(entry => new Date(entry.date).toLocaleDateString('en-US', { year: 'numeric', month: 'short', day: 'numeric' })),
+    datasets: [{
+      label: 'Screen Time (minutes)',
+      data: screenTimeData.map(entry => Math.floor(entry.totalTime / 60)),
+      backgroundColor: 'rgba(34, 197, 94, 0.6)',
+      borderColor: 'rgba(59, 130, 246, 1)',
+      borderWidth: 1,
+    }],
+  };
+
+  const tabUsageMap = {};
+  screenTimeData
+    .filter(entry => new Date(entry.date).toISOString().split('T')[0] === today)
+    .forEach(entry => entry.tabs.forEach(tab => tabUsageMap[tab.url] = (tabUsageMap[tab.url] || 0) + tab.timeSpent));
+
+  const pieChartData = {
+    labels: Object.keys(tabUsageMap),
+    datasets: [{
+      label: 'Tab Usage (seconds)',
+      data: Object.values(tabUsageMap),
+      backgroundColor: ['rgba(34, 197, 94, 0.6)', 'rgba(59, 130, 246, 0.6)', 'rgba(255, 206, 86, 0.6)', 'rgba(75, 192, 192, 0.6)', 'rgba(153, 102, 255, 0.6)', 'rgba(255, 159, 64, 0.6)'],
+      borderColor: ['rgba(34, 197, 94, 1)', 'rgba(59, 130, 246, 1)', 'rgba(255, 206, 86, 1)', 'rgba(75, 192, 192, 1)', 'rgba(153, 102, 255, 1)', 'rgba(255, 159, 64, 1)'],
+      borderWidth: 1,
+    }],
+  };
+
+  const handleInstallReminder = () => {
+    alert('Please install the ChillBoard Chrome extension to track your screen time!');
+    window.open('https://chrome.com/webstore', '_blank');
+  };
+
+  const latestRecommendation = recommendations.length > 0 ? recommendations[0] : null;
+
+  useEffect(() => {
+    const handleBeforeUnload = () => {
+      if (isPlaying && currentPlaylist.id) {
+        localStorage.setItem('chillboardPlaybackState', JSON.stringify({ id: currentPlaylist.id, offset: currentPlaylist.offset, name: currentPlaylist.name }));
+      }
+    };
+    window.addEventListener('beforeunload', handleBeforeUnload);
+    return () => window.removeEventListener('beforeunload', handleBeforeUnload);
+  }, [isPlaying, currentPlaylist]);
+
+  useEffect(() => {
+    const initializePlaylist = async () => {
+      const playbackState = localStorage.getItem('chillboardPlaybackState');
+      if (latestRecommendation?.type === 'music') {
+        const details = JSON.parse(latestRecommendation.details);
+        setCurrentPlaylist({ id: details.playlistId, name: details.name, offset: 0 });
+      } else if (playbackState && !currentPlaylist.id) {
+        const { id, offset, name } = JSON.parse(playbackState);
+        setCurrentPlaylist({ id, name, offset });
+      } else {
+        setCurrentPlaylist({ id: '', name: '', offset: 0 });
+      }
+    };
+    initializePlaylist();
+  }, [latestRecommendation]);
+
+  return (
+    <div className="min-h-screen bg-green-50 p-4 md:p-6">
+      <h1 className="text-4xl font-bold text-center mb-8 text-gray-700 sm:text-2xl">ChillBoard Dashboard</h1>
+      {error && <p className="text-red-500 text-center mb-4 sm:text-sm">{error}</p>}
+      {!extensionInstalled && (
+        <div className="text-center mb-8">
+          <p className="text-yellow-600 mb-2 sm:text-sm">ChillBoard extension not detected!</p>
+          <button onClick={handleInstallReminder} className="bg-yellow-500 text-white px-4 py-2 rounded hover:bg-yellow-600 sm:text-sm">Install Extension</button>
+        </div>
+      )}
+      <div className="mb-8 text-center">
+        <button onClick={webcamEnabled ? stopWebcam : () => setWebcamEnabled(true)} className={`px-4 py-2 rounded ${webcamEnabled ? 'bg-red-500 hover:bg-red-600' : 'bg-green-500 hover:bg-green-600'} text-white`} disabled={!modelsLoaded}>{webcamEnabled ? 'Disable Mood Detection' : 'Enable Mood Detection'}</button>
+      </div>
+      <div className="mb-8 text-center">
+        <button onClick={handleSpotifyConnect} className="bg-green-500 text-white px-4 py-2 rounded hover:bg-green-600 sm:text-sm">Connect Spotify</button>
+      </div>
+      {leaderboardLoading ? (
+        <div className="mb-8 text-center bg-white p-4 rounded-lg shadow-md max-w-2xl mx-auto border border-blue-200">
+          <p className="text-gray-700 sm:text-sm">Loading leaderboard...</p>
+        </div>
+      ) : leaderboard.length > 0 ? (
+        <div className="mb-8 text-center bg-white p-4 rounded-lg shadow-md max-w-2xl mx-auto border border-blue-200">
+          <h2 className="text-xl font-semibold text-gray-700 mb-2 sm:text-lg">Top 3 Leaders</h2>
+          {leaderboard.map((entry, index) => (
+            <p key={index} className="text-gray-700 mb-1 sm:text-sm">
+              #{entry.rank} {entry.username}: {entry.reduction.toFixed(1)} hours
+            </p>
+          ))}
+        </div>
+      ) : (
+        <div className="mb-8 text-center bg-white p-4 rounded-lg shadow-md max-w-2xl mx-auto border border-blue-200">
+          <p className="text-gray-700 sm:text-sm">No leaderboard data available. Join a challenge to see rankings!</p>
+        </div>
+      )}
+      <div className="mb-8 flex justify-center sm:w-full">
+        <video ref={videoRef} autoPlay muted className={`rounded-lg shadow-md w-64 h-48 ${webcamEnabled ? 'block' : 'hidden'} border border-blue-200 sm:w-full sm:h-32`} playsInline />
+      </div>
+      {webcamEnabled && (
+        <div className="mb-8 text-center bg-white p-4 rounded-lg shadow-md border border-blue-200">
+          <p className="text-xl font-semibold text-gray-700 sm:text-lg">{detectedMood}</p>
+          {!detectedMood.includes('No face') && !detectedMood.includes('Error') && (
+            <div className="mt-4">
+              <label className="text-gray-700 sm:text-sm">Not correct? Select another mood: </label>
+              <select value={correctedMood} onChange={handleMoodCorrection} className="ml-2 p-2 border rounded focus:outline-none focus:ring-2 focus:ring-green-500 sm:text-sm">
+                <option value="">Select mood</option>
+                <option value="happy">Happy</option>
+                <option value="sad">Sad</option>
+                <option value="angry">Angry</option>
+                <option value="stressed">Stressed</option>
+                <option value="calm">Calm</option>
+                <option value="neutral">Neutral</option>
+              </select>
+            </div>
+          )}
+        </div>
+      )}
+      {latestRecommendation && (
+        <div className="mb-8 sm:w-full">
+          <h2 className="text-2xl font-semibold text-center mb-4 text-gray-700 sm:text-xl">Recommendation</h2>
+          <div className="bg-white p-6 rounded-lg shadow-md max-w-6xl mx-auto border border-blue-200 sm:w-full sm:p-4">
+            {latestRecommendation.details ? (
+              <p className="text-lg font-medium text-gray-700 mb-4 sm:text-base">
+                {(() => {
+                  try {
+                    const details = JSON.parse(latestRecommendation.details);
+                    return details.message || details.name || 'No specific recommendation details available.';
+                  } catch (e) {
+                    console.warn('Failed to parse recommendation details:', e);
+                    return latestRecommendation.details || 'No specific recommendation details available.';
+                  }
+                })()}
+              </p>
+            ) : (
+              <p className="text-lg font-medium text-gray-700 mb-4 sm:text-base">No specific recommendation details available.</p>
+            )}
+            <div className="mt-4 flex space-x-4 justify-center sm:flex-col sm:space-y-2 sm:space-x-0">
+              <button onClick={() => handleRecommendationAction(latestRecommendation.recommendationId, true)} disabled={actionStatus !== null} className={`px-4 py-2 rounded ${actionStatus ? 'bg-gray-400 cursor-not-allowed' : 'bg-green-500 hover:bg-green-600 text-white'} sm:w-full`}>Accept</button>
+              <button onClick={() => handleRecommendationAction(latestRecommendation.recommendationId, false)} disabled={actionStatus !== null} className={`px-4 py-2 rounded ${actionStatus ? 'bg-gray-400 cursor-not-allowed' : 'bg-red-500 hover:bg-red-600 text-white'} sm:w-full`}>Decline</button>
+            </div>
+            {actionStatus && <p className="mt-2 text-sm text-gray-700 sm:text-xs">Recommendation {actionStatus === 'accepted' ? 'accepted' : 'declined'}!</p>}
+            {latestRecommendation.type === 'break' && !actionStatus && (
+              <div className="mt-4 sm:w-full">
+                {timer !== null ? (
+                  <div>
+                    <p className="text-xl font-semibold text-gray-700 sm:text-lg">{formatTime(timer)}</p>
+                    <button onClick={resetTimer} className="mt-2 bg-green-500 text-white px-4 py-2 rounded hover:bg-green-600 sm:w-full">Reset Timer</button>
+                  </div>
+                ) : (
+                  <button onClick={() => startTimer(parseInt(latestRecommendation.details.match(/\d+/)[0]) || 5)} className="mt-2 bg-green-500 text-white px-4 py-2 rounded hover:bg-green-600 sm:w-full">Start Timer</button>
+                )}
+              </div>
+            )}
+            {(latestRecommendation.type === 'activity' && !actionStatus) && (
+              <div className="mt-4 sm:w-full">
+                {timer !== null ? (
+                  <div>
+                    <p className="text-xl font-semibold text-gray-700 sm:text-lg">{formatTime(timer)}</p>
+                    <button onClick={resetTimer} className="mt-2 bg-green-500 text-white px-4 py-2 rounded hover:bg-green-600 sm:w-full">Reset Timer</button>
+                  </div>
+                ) : (
+                  <button
+                    onClick={() => {
+                      const duration = latestRecommendation.details.includes('body stretch') ? 2 :
+                        latestRecommendation.details.includes('walk') ? 10 :
+                        latestRecommendation.details.includes('eye exercises') ? 2 :
+                        latestRecommendation.details.includes('meditation') ? 5 : 0;
+                      if (duration > 0) startTimer(duration);
+                    }}
+                    className="mt-2 bg-green-500 text-white px-4 py-2 rounded hover:bg-green-600 sm:w-full"
+                  >
+                    Start Timer
+                  </button>
+                )}
+              </div>
+            )}
+            {latestRecommendation.type === 'music' && (
+              <div className="mt-4 sm:w-full">
+                {spotifyToken ? (
+                  <div>
+                    <p className="text-md font-medium mb-2 text-gray-700 sm:text-sm">Playing: {currentPlaylist.name || 'Loading...'}</p>
+                    <SpotifyPlayer
+                      token={spotifyToken}
+                      uris={[`spotify:playlist:${currentPlaylist.id}`]}
+                      play={isPlaying}
+                      offset={currentPlaylist.offset}
+                      callback={async (state) => {
+                        if (state.isPlaying) {
+                          setCurrentPlaylist(prev => ({ ...prev, offset: state.progressMs / 1000 || 0 }));
+                          localStorage.setItem('chillboardPlaybackState', JSON.stringify({ id: currentPlaylist.id, offset: state.progressMs / 1000, name: currentPlaylist.name }));
+                        }
+                        if (state.error) {
+                          console.error('Playback error:', state.error);
+                          setError(`Playback failed: ${state.error.message}`);
+                          showToast(`Playback failed: ${state.error.message}`, 'error');
+                          if (state.error.status === 401) {
+                            await handleSpotifyConnect();
+                            const userData = await getUser();
+                            setSpotifyToken(userData.spotifyToken?.accessToken || '');
+                            setDeviceId(userData.deviceId || '');
+                          } else if (state.error.status === 503) {
+                            setTimeout(async () => {
+                              const userData = await getUser();
+                              setSpotifyToken(userData.spotifyToken?.accessToken || '');
+                              setDeviceId(userData.deviceId || '');
+                              showToast('Retrying playback...', 'info');
+                            }, 5000);
+                          }
+                        }
+                      }}
+                      styles={{
+                        bgColor: '#e5e7eb',
+                        color: '#1a202c',
+                        loaderColor: '#48bb78',
+                        sliderColor: '#48bb78',
+                        trackNameColor: '#2d3748',
+                      }}
+                      className="w-full sm:h-32"
+                    />
+                    <div className="mt-4 flex space-x-4 justify-center sm:flex-col sm:space-y-2 sm:space-x-0">
+                      <button onClick={handleSavePlaylist} className="bg-green-500 text-white px-4 py-2 rounded hover:bg-green-600 sm:w-full">Save</button>
+                      <button onClick={handleSkipPlaylist} className="bg-green-500 text-white px-4 py-2 rounded hover:bg-green-600 sm:w-full">Skip</button>
+                      {!isPlaying && <button onClick={handlePlay} className="bg-green-500 text-white px-4 py-2 rounded hover:bg-green-600 sm:w-full">Play</button>}
+                    </div>
+                  </div>
+                ) : (
+                  <button onClick={handleSpotifyConnect} className="mt-2 bg-green-500 text-white px-4 py-2 rounded hover:bg-green-600 sm:text-sm">Connect Spotify to Play</button>
+                )}
+              </div>
+            )}
+          </div>
+        </div>
+      )}
+      <div className="grid grid-cols-1 md:grid-cols-2 gap-8 sm:flex-col sm:gap-4">
+        <div className="bg-white p-4 rounded-lg shadow-md border border-blue-200 sm:w-full">
+          <h2 className="text-2xl font-semibold mb-4 text-gray-700 sm:text-xl">Daily Screen Time</h2>
+          {screenTimeData.length > 0 ? (
+            <Bar
+              data={barChartData}
+              options={{
+                responsive: true,
+                plugins: { legend: { display: false }, tooltip: { callbacks: { label: ctx => `${ctx.dataset.label}: ${ctx.raw} minutes` } } },
+                scales: { x: { title: { display: true, text: 'Date' } }, y: { title: { display: true, text: 'Minutes' }, beginAtZero: true } },
+              }}
+            />
+          ) : <p className="text-gray-700 sm:text-sm">No screen time data available.</p>}
+        </div>
+        <div className="bg-white p-4 rounded-lg shadow-md border border-blue-200 sm:w-full">
+          <h2 className="text-2xl font-semibold mb-4 text-gray-700 sm:text-xl">Tab Usage</h2>
+          {pieChartData.labels.length > 0 ? <Pie data={pieChartData} options={{ responsive: true, plugins: { legend: { position: 'top' } } }} /> : <p className="text-gray-700 sm:text-sm">No tab usage data available.</p>}
+        </div>
+      </div>
+      <ToastContainer />
+    </div>
+  );
+};
+
+export default Dashboard;
