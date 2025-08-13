@@ -107,7 +107,6 @@ const Dashboard = () => {
       if (joined) {
         const data = await getLeaderboard(joined.challengeId);
         setLeaderboard(data.slice(0, 3));
-        showToast('Leaderboard fetched successfully!');
       } else {
         setLeaderboard([]);
         showToast('No leaderboard data available', 'info');
