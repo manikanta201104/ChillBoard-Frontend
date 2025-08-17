@@ -141,7 +141,7 @@ const Settings = () => {
             </div>
 
             {/* Challenge Settings */}
-            <div className="space-y-4">
+            {/* <div className="space-y-4">
               <div className="flex items-center space-x-3 mb-4">
                 <div className="w-8 h-8 bg-slate-100 rounded-lg flex items-center justify-center">
                   <svg className="w-5 h-5 text-slate-600" fill="none" stroke="currentColor" viewBox="0 0 24 24">
@@ -183,7 +183,7 @@ const Settings = () => {
                   </div>
                 </label>
               </div>
-            </div>
+            </div> */}
 
             {/* Save Button */}
             <div className="pt-4">

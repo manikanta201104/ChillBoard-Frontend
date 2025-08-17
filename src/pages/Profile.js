@@ -185,7 +185,7 @@ const Profile = () => {
               </div>
             </div>
 
-            <div className="grid grid-cols-1 lg:grid-cols-2 gap-8">
+            {/* <div className="grid grid-cols-1 lg:grid-cols-2 gap-8">
               <div className="bg-white rounded-lg shadow-sm border border-slate-200">
                 <div className="p-6 border-b border-slate-200">
                   <div className="flex items-center space-x-3">
@@ -223,7 +223,7 @@ const Profile = () => {
                   <Bar data={moodTrend} options={chartOptions} />
                 </div>
               </div>
-            </div>
+            </div> */}
 
             <div className="bg-white rounded-lg shadow-sm border border-slate-200">
               <div className="p-6 border-b border-slate-200">
