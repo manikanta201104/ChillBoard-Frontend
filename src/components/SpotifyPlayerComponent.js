@@ -150,10 +150,10 @@ const SpotifyPlayerComponent = ({ latestRecommendation, fetchRecommendations }) 
   };
 
   const handleSavePlaylist = async () => {
-    if (!currentPlaylist.id || !authToken) {
-      showToast('No playlist or token available', 'error');
-      return;
-    }
+    // if (!currentPlaylist.id || !authToken) {
+    //   showToast('No playlist or token available', 'error');
+    //   return;
+    // }
     if (isSaved) {
       showToast('Playlist is already saved', 'info');
       return;
@@ -181,42 +181,48 @@ const SpotifyPlayerComponent = ({ latestRecommendation, fetchRecommendations }) 
   };
 
   const handlePlay = async () => {
-    if (!deviceId) {
-      const newDeviceId = await fetchDevices(spotifyToken);
-      if (newDeviceId) {
-        setDeviceId(newDeviceId);
-        showToast('Device ID updated, retrying playback...', 'info');
+  if (!deviceId) {
+    const newDeviceId = await fetchDevices(spotifyToken);
+    if (newDeviceId) {
+      setDeviceId(newDeviceId);
+      showToast('Device ID updated, retrying playback...', 'info');
+    } else {
+      setError('No active Spotify device found. Please open Spotify, start playback, and reconnect if needed.');
+      showToast('No active Spotify device found. Open Spotify and try again.', 'error');
+      return;
+    }
+  }
+  setIsPlaying(true);
+  try {
+    await startPlayback(deviceId, currentPlaylist.id, currentPlaylist.offset);
+    const playbackState = localStorage.getItem('chillboardPlaybackState');
+    const offset = playbackState ? JSON.parse(playbackState).offset || 0 : 0;
+    setCurrentPlaylist(prev => ({ ...prev, offset }));
+    showToast('Playback started!');
+  } catch (err) {
+    console.error('Playback error:', err);
+    let errorMessage = `Playback failed: ${err.message}`;
+    if (err.response?.status === 403) {
+      if (err.response?.data?.error?.reason === 'PREMIUM_REQUIRED') {
+        errorMessage = 'Playback requires a Spotify Premium account. Please upgrade or use a Premium account.';
+      } else if (err.response?.data?.error?.reason === 'NO_ACTIVE_DEVICE') {
+        errorMessage = 'No active device found. Please open Spotify and start playback manually.';
       } else {
-        setError('No active Spotify device found. Please open Spotify, start playback, and reconnect if needed.');
-        showToast('No active Spotify device found. Open Spotify and try again.', 'error');
-        return;
+        errorMessage = 'Playback failed due to a restriction. Please try again or reconnect Spotify.';
       }
-    }
-    setIsPlaying(true);
-    try {
-      await startPlayback(deviceId, currentPlaylist.id, currentPlaylist.offset);
-      const playbackState = localStorage.getItem('chillboardPlaybackState');
-      const offset = playbackState ? JSON.parse(playbackState).offset || 0 : 0;
-      setCurrentPlaylist(prev => ({ ...prev, offset }));
-      showToast('Playback started!');
-    } catch (err) {
-      console.error('Playback error:', err);
-      let errorMessage = `Playback failed: ${err.message}`;
-      if (err.response?.status === 403) {
-        errorMessage = 'Playback failed: Requires Spotify Premium or device restriction.';
-        showToast(errorMessage, 'error');
-      } else if (err.response?.status === 401) {
-        errorMessage = 'Permissions missing or session expired, reconnecting Spotify...';
-        await handleSpotifyConnect();
-        await refreshUserData();
-      } else if (err.message.includes('token')) {
-        await refreshUserData();
-      }
-      setError(errorMessage);
       showToast(errorMessage, 'error');
-      setIsPlaying(false);
+    } else if (err.response?.status === 401) {
+      errorMessage = 'Permissions missing or session expired, reconnecting Spotify...';
+      await handleSpotifyConnect();
+      await refreshUserData();
+    } else if (err.message.includes('token')) {
+      await refreshUserData();
     }
-  };
+    setError(errorMessage);
+    showToast(errorMessage, 'error');
+    setIsPlaying(false);
+  }
+};
 
   const handleSkipPlaylist = async () => {
     let mood = (await getLatestMood())?.mood?.toLowerCase();
