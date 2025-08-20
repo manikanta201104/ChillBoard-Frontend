@@ -55,6 +55,21 @@ const SpotifyPlayerComponent = ({ latestRecommendation, fetchRecommendations }) 
     }
   }, [refreshingToken]);
 
+  const fetchDevices = useCallback(async (token) => {
+    try {
+      const response = await fetch('https://api.spotify.com/v1/me/player/devices', {
+        headers: { Authorization: `Bearer ${token}` },
+      });
+      if (!response.ok) throw new Error('Failed to fetch devices');
+      const data = await response.json();
+      const activeDevice = data.devices.find(d => d.is_active) || data.devices[0];
+      return activeDevice?.id || null;
+    } catch (err) {
+      console.error('Error fetching Spotify devices:', err);
+      return null;
+    }
+  }, []);
+
   const checkPlaylistSavedStatus = useCallback(async () => {
     if (!currentPlaylist.id || !authToken) return;
     try {
@@ -72,7 +87,14 @@ const SpotifyPlayerComponent = ({ latestRecommendation, fetchRecommendations }) 
       try {
         const userData = await getUser();
         setSpotifyToken(userData.spotifyToken?.accessToken || '');
-        setDeviceId(userData.deviceId || '');
+        let fetchedDeviceId = userData.deviceId || '';
+        if (!fetchedDeviceId && userData.spotifyToken?.accessToken) {
+          fetchedDeviceId = await fetchDevices(userData.spotifyToken.accessToken);
+          if (fetchedDeviceId) {
+            await getUser(); // Refresh user data with new deviceId if fetched
+          }
+        }
+        setDeviceId(fetchedDeviceId || '');
         if (userData.authToken) {
           setAuthToken(userData.authToken);
           localStorage.setItem('authToken', userData.authToken);
@@ -104,7 +126,7 @@ const SpotifyPlayerComponent = ({ latestRecommendation, fetchRecommendations }) 
     };
     window.addEventListener('beforeunload', handleBeforeUnload);
     return () => window.removeEventListener('beforeunload', handleBeforeUnload);
-  }, [latestRecommendation, isPlaying, currentPlaylist.id, checkPlaylistSavedStatus]);
+  }, [latestRecommendation, isPlaying, currentPlaylist.id, checkPlaylistSavedStatus, fetchDevices]);
 
   const handleSpotifyConnect = async () => {
     try {
@@ -150,9 +172,15 @@ const SpotifyPlayerComponent = ({ latestRecommendation, fetchRecommendations }) 
 
   const handlePlay = async () => {
     if (!deviceId) {
-      setError('No device ID available. Please ensure Spotify is active.');
-      showToast('No device ID available', 'error');
-      return;
+      const newDeviceId = await fetchDevices(spotifyToken);
+      if (newDeviceId) {
+        setDeviceId(newDeviceId);
+        showToast('Device ID updated, retrying playback...', 'info');
+      } else {
+        setError('No active Spotify device found. Please open Spotify and start playback.');
+        showToast('No active Spotify device found. Open Spotify and try again.', 'error');
+        return;
+      }
     }
     setIsPlaying(true);
     try {
@@ -163,13 +191,20 @@ const SpotifyPlayerComponent = ({ latestRecommendation, fetchRecommendations }) 
       showToast('Playback started!');
     } catch (err) {
       console.error('Playback error:', err);
-      setError(`Playback failed: ${err.message}`);
-      showToast(`Playback failed: ${err.message}`, 'error');
-      if (err.response?.status === 401 || err.response?.status === 403) {
+      let errorMessage = `Playback failed: ${err.message}`;
+      if (err.response?.status === 403) {
+        errorMessage = 'Playback failed: Requires Spotify Premium or device restriction.';
+        showToast(errorMessage, 'error');
+      } else if (err.response?.status === 401 || err.response?.status === 400) {
+        errorMessage = 'Session expired, reconnecting Spotify...';
         await handleSpotifyConnect();
+        await refreshUserData();
       } else if (err.message.includes('token')) {
         await refreshUserData();
       }
+      setError(errorMessage);
+      showToast(errorMessage, 'error');
+      setIsPlaying(false);
     }
   };
 
@@ -286,7 +321,7 @@ const SpotifyPlayerComponent = ({ latestRecommendation, fetchRecommendations }) 
                 className="px-6 py-3 bg-slate-600 text-white rounded-lg hover:bg-slate-700 transition-colors duration-200 shadow-sm hover:shadow-md flex items-center justify-center space-x-2"
               >
                 <svg className="w-4 h-4" fill="none" stroke="currentColor" viewBox="0 0 24 24">
-                  <path strokeLinecap="round" strokeLinejoin="round" strokeWidth="2" d="M9 5l 10 10" />
+                  <path strokeLinecap="round" strokeLinejoin="round" strokeWidth="2" d="M13 10V6a2 2 0 00-2-2H9m-2 8h10m-6 4h4a2 2 0 002-2v-4a2 2 0 00-2-2H7a2 2 0 00-2 2v4a2 2 0 002 2z" />
                 </svg>
                 <span>Next Playlist</span>
               </button>
