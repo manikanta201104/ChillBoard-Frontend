@@ -60,12 +60,21 @@ const SpotifyPlayerComponent = ({ latestRecommendation, fetchRecommendations }) 
       const response = await fetch('https://api.spotify.com/v1/me/player/devices', {
         headers: { Authorization: `Bearer ${token}` },
       });
-      if (!response.ok) throw new Error('Failed to fetch devices');
+      if (!response.ok) {
+        if (response.status === 401) {
+          throw new Error('Permissions missing, please re-authenticate with Spotify');
+        }
+        throw new Error(`Failed to fetch devices: ${response.statusText}`);
+      }
       const data = await response.json();
       const activeDevice = data.devices.find(d => d.is_active) || data.devices[0];
       return activeDevice?.id || null;
     } catch (err) {
       console.error('Error fetching Spotify devices:', err);
+      if (err.message.includes('re-authenticate')) {
+        setError('Permissions missing, please reconnect Spotify.');
+        handleSpotifyConnect();
+      }
       return null;
     }
   }, []);
@@ -91,7 +100,8 @@ const SpotifyPlayerComponent = ({ latestRecommendation, fetchRecommendations }) 
         if (!fetchedDeviceId && userData.spotifyToken?.accessToken) {
           fetchedDeviceId = await fetchDevices(userData.spotifyToken.accessToken);
           if (fetchedDeviceId) {
-            await getUser(); // Refresh user data with new deviceId if fetched
+            // Optionally update user data with new deviceId on backend
+            await getUser(); // Refresh to sync deviceId
           }
         }
         setDeviceId(fetchedDeviceId || '');
@@ -177,7 +187,7 @@ const SpotifyPlayerComponent = ({ latestRecommendation, fetchRecommendations }) 
         setDeviceId(newDeviceId);
         showToast('Device ID updated, retrying playback...', 'info');
       } else {
-        setError('No active Spotify device found. Please open Spotify and start playback.');
+        setError('No active Spotify device found. Please open Spotify, start playback, and reconnect if needed.');
         showToast('No active Spotify device found. Open Spotify and try again.', 'error');
         return;
       }
@@ -195,8 +205,8 @@ const SpotifyPlayerComponent = ({ latestRecommendation, fetchRecommendations }) 
       if (err.response?.status === 403) {
         errorMessage = 'Playback failed: Requires Spotify Premium or device restriction.';
         showToast(errorMessage, 'error');
-      } else if (err.response?.status === 401 || err.response?.status === 400) {
-        errorMessage = 'Session expired, reconnecting Spotify...';
+      } else if (err.response?.status === 401) {
+        errorMessage = 'Permissions missing or session expired, reconnecting Spotify...';
         await handleSpotifyConnect();
         await refreshUserData();
       } else if (err.message.includes('token')) {
