@@ -9,6 +9,7 @@ import Navbar from './components/Navbar';
 import AdminDashboard from './pages/AdminDashboard.jsx';
 import Privacy from './pages/Privacy';
 import ForgotPassword from './pages/ForgotPassword.jsx';
+import EmailPolicy from './pages/EmailPolicy.jsx';
 
 const ProtectedLayout = () => {
   // Check if user is authenticated (e.g., userId exists in localStorage)
@@ -45,6 +46,7 @@ function App() {
           <Route path="/settings" element={<Settings />} />
           <Route path="/about" element={<About />} />
           <Route path="/privacy" element={<Privacy />} />
+          <Route path="/email-policy" element={<EmailPolicy />} />
           <Route element={<AdminRoute />}>
             <Route path="/admin" element={<AdminDashboard />} />
           </Route>
