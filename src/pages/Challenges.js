@@ -410,20 +410,23 @@ const Challenges = () => {
           </div>
         )}
 
-        {/* Leaderboard Sections */}
+        {/* Leaderboard Sections - Only one per duration */}
         {selectedDuration &&
-          challenges
-            .filter((c) => c.duration === selectedDuration)
-            .map((challenge) => (
-              <div
-                key={challenge.challengeId}
-                className="bg-white rounded-lg shadow-sm border border-slate-200 mb-6"
-              >
+          (() => {
+            const challengesForDuration = challenges.filter(
+              (c) => c.duration === selectedDuration,
+            );
+            const firstChallenge = challengesForDuration[0];
+
+            if (!firstChallenge) return null;
+
+            return (
+              <div className="bg-white rounded-lg shadow-sm border border-slate-200 mb-6">
                 <div className="p-6 border-b border-slate-200">
                   <div className="flex items-center justify-between">
                     <div>
                       <h2 className="text-2xl font-bold text-slate-700">
-                        {getDurationLabel(challenge.duration)} Leaderboard
+                        {getDurationLabel(firstChallenge.duration)} Leaderboard
                       </h2>
                       <p className="text-slate-500 text-sm mt-1">
                         Top performers in screen time reduction
@@ -439,7 +442,8 @@ const Challenges = () => {
                 </div>
 
                 <div className="p-6">
-                  {loading && !leaderboards[challenge.challengeId]?.length ? (
+                  {loading &&
+                  !leaderboards[firstChallenge.challengeId]?.length ? (
                     <div className="text-center py-8">
                       <div className="inline-flex items-center space-x-2">
                         <div className="w-4 h-4 bg-slate-400 rounded-full animate-pulse"></div>
@@ -448,9 +452,9 @@ const Challenges = () => {
                         </span>
                       </div>
                     </div>
-                  ) : leaderboards[challenge.challengeId]?.length > 0 ? (
+                  ) : leaderboards[firstChallenge.challengeId]?.length > 0 ? (
                     <div className="space-y-3">
-                      {leaderboards[challenge.challengeId].map(
+                      {leaderboards[firstChallenge.challengeId].map(
                         (entry, index) => {
                           const isTopThree = index < 3;
                           const medals = ["🥇", "🥈", "🥉"];
@@ -521,7 +525,8 @@ const Challenges = () => {
                   )}
                 </div>
               </div>
-            ))}
+            );
+          })()}
       </div>
     </div>
   );

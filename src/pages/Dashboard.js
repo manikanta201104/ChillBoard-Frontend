@@ -505,7 +505,7 @@ const Dashboard = () => {
       </div>
 
       {/* Leaderboard Section */}
-      <div className="max-w-4xl mx-auto">
+      {/* <div className="max-w-4xl mx-auto">
         <div className="bg-white rounded-lg shadow-sm border border-slate-200 p-6">
           <div className="text-center mb-6">
             <h2 className="text-xl font-medium text-slate-700 mb-2">
@@ -577,7 +577,7 @@ const Dashboard = () => {
             </div>
           )}
         </div>
-      </div>
+      </div> */}
 
       {/* Recommendations Section */}
       {latestRecommendation && (
