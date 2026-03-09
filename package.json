@@ -2,6 +2,7 @@
   "name": "chillboard-frontend",
   "version": "0.1.0",
   "private": true,
+  "homepage": ".",
   "dependencies": {
     "@clerk/clerk-react": "^5.33.0",
     "@tensorflow/tfjs": "^4.10.0",
