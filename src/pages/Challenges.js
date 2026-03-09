@@ -4,6 +4,7 @@ import {
   joinChallenge,
   getLeaderboard,
   getUser,
+  adminListUsers,
 } from "../utils/api";
 
 const Challenges = () => {
@@ -22,7 +23,27 @@ const Challenges = () => {
     for (let attempt = 1; attempt <= retries; attempt++) {
       try {
         const data = await getLeaderboard(challengeId);
-        setLeaderboards((prev) => ({ ...prev, [challengeId]: data }));
+
+        // Get all users to map userIds to usernames
+        const allUsers = await adminListUsers(1, 1000); // Get up to 1000 users
+        const userMap = {};
+        allUsers.forEach((user) => {
+          userMap[user.userId] = user.username;
+        });
+
+        // Map leaderboard entries with usernames
+        const leaderboardWithUsernames = data.map((entry) => ({
+          ...entry,
+          username:
+            entry.userId === userId
+              ? user?.username || "You"
+              : userMap[entry.userId] || `User_${entry.userId.slice(-4)}`,
+        }));
+
+        setLeaderboards((prev) => ({
+          ...prev,
+          [challengeId]: leaderboardWithUsernames,
+        }));
         if (error) setError("");
         setLoading(false);
         return;
