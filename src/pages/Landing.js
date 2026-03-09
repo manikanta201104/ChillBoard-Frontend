@@ -148,7 +148,7 @@ const Landing = () => {
                   </div>
                 </div>
                 <a
-                  href="https://chromewebstore.google.com/detail/chillboard-extension/feaegaofmcfblfmegpkliepealjhongd"
+                  href="https://chrome.google.com/webstore"
                   target="_blank"
                   rel="noopener noreferrer"
                   className="inline-flex items-center space-x-2 bg-blue-600 text-white px-6 py-3 rounded-lg hover:bg-blue-700 transition-colors duration-200 font-medium w-full justify-center"
