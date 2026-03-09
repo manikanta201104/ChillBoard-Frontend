@@ -1,6 +1,6 @@
-console.log('Applying custom Webpack configuration...');
+console.log("Applying custom Webpack configuration...");
 
-module.exports = function override(config) {
+module.exports = function override(config, env) {
   // Suppress source map warnings for face-api.js
   config.ignoreWarnings = [
     {
@@ -12,23 +12,30 @@ module.exports = function override(config) {
   // Configure source-map-loader to exclude face-api.js
   config.module.rules.push({
     test: /\.js$/,
-    enforce: 'pre',
-    use: ['source-map-loader'],
+    enforce: "pre",
+    use: ["source-map-loader"],
     exclude: [/node_modules\/face-api\.js/],
   });
 
   // Provide fallbacks for Node.js modules
   config.resolve.fallback = {
-    http: require.resolve('stream-http'),
-    https: require.resolve('https-browserify'),
-    util: require.resolve('util/'),
-    zlib: require.resolve('browserify-zlib'),
-    stream: require.resolve('stream-browserify'),
-    crypto: require.resolve('crypto-browserify'),
-    url: require.resolve('url/'),
-    assert: require.resolve('assert/'),
+    http: require.resolve("stream-http"),
+    https: require.resolve("https-browserify"),
+    util: require.resolve("util/"),
+    zlib: require.resolve("browserify-zlib"),
+    stream: require.resolve("stream-browserify"),
+    crypto: require.resolve("crypto-browserify"),
+    url: require.resolve("url/"),
+    assert: require.resolve("assert/"),
     fs: false, // Ignore fs module
   };
+
+  // Disable ESLint in production builds
+  if (env === "production") {
+    config.plugins = config.plugins.filter(
+      (plugin) => plugin.constructor.name !== "ESLintWebpackPlugin",
+    );
+  }
 
   return config;
 };
