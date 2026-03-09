@@ -456,7 +456,9 @@ const Challenges = () => {
                                 <span
                                   className={`font-medium ${isTopThree ? "text-slate-800" : "text-slate-700"}`}
                                 >
-                                  {entry.username}
+                                  {entry.userId === userId
+                                    ? user?.username || "You"
+                                    : entry.username || "Anonymous"}
                                 </span>
                               </div>
                               <div className="text-right">
